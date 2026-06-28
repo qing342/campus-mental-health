@@ -2,7 +2,6 @@ import streamlit as st
 import sqlite3
 import hashlib
 from enum import Enum
-from datetime import datetime
 from datetime import datetime, timedelta
 
 # ==================== 枚举 ====================
@@ -14,9 +13,9 @@ class UserRole(Enum):
 # ==================== 数据库管理器 ====================
 class DatabaseManager:
     @staticmethod
-    @st.cache_resource
     def get_connection():
-        conn = sqlite3.connect('emotional_tree.db')
+        # 去掉 @st.cache_resource，允许在 Streamlit 的多线程环境中安全使用
+        conn = sqlite3.connect('emotional_tree.db', check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -26,130 +25,131 @@ class DatabaseManager:
 
     @staticmethod
     def init_db():
-        conn = DatabaseManager.get_connection()
-        cursor = conn.cursor()
-        
-        # 创建用户表
-        cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )''')
-        
-        # 创建帖子表
-        cursor.execute('''CREATE TABLE IF NOT EXISTS posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            tag TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )''')
-        
-        # 创建回复表
-        cursor.execute('''CREATE TABLE IF NOT EXISTS replies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (post_id) REFERENCES posts(id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )''')
-        
-        conn.commit()
-        
+        # 使用 with 块，确保表创建完成后自动关闭连接
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 创建用户表
+            cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )''')
+            
+            # 创建帖子表
+            cursor.execute('''CREATE TABLE IF NOT EXISTS posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )''')
+            
+            # 创建回复表
+            cursor.execute('''CREATE TABLE IF NOT EXISTS replies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (post_id) REFERENCES posts(id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )''')
+            
+            conn.commit()
+            
         # 初始化演示用户
         DatabaseManager._init_demo_users()
 
     @staticmethod
     def _init_demo_users():
-        conn = DatabaseManager.get_connection()
-        cursor = conn.cursor()
-        
-        demo_users = [
-            ("student1", "123456", UserRole.STUDENT.value),
-            ("volunteer1", "123456", UserRole.VOLUNTEER.value),
-            ("teacher1", "123456", UserRole.TEACHER.value)
-        ]
-        
-        for username, password, role in demo_users:
-            try:
-                hashed_password = DatabaseManager.hash_password(password)
-                cursor.execute('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
-                             (username, hashed_password, role))
-            except sqlite3.IntegrityError:
-                pass  # 用户已存在
-        
-        conn.commit()
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            demo_users = [
+                ("student1", "123456", UserRole.STUDENT.value),
+                ("volunteer1", "123456", UserRole.VOLUNTEER.value),
+                ("teacher1", "123456", UserRole.TEACHER.value)
+            ]
+            
+            for username, password, role in demo_users:
+                try:
+                    hashed_password = DatabaseManager.hash_password(password)
+                    cursor.execute('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
+                                 (username, hashed_password, role))
+                except sqlite3.IntegrityError:
+                    pass  # 用户已存在
+            
+            conn.commit()
 
     @staticmethod
     def authenticate_user(username, password):
-        conn = DatabaseManager.get_connection()
-        cursor = conn.cursor()
-        hashed_password = DatabaseManager.hash_password(password)
-        
-        cursor.execute('SELECT id, username, role FROM users WHERE username = ? AND password = ?',
-                      (username, hashed_password))
-        user = cursor.fetchone()
-        
-        if user:
-            return dict(user)
-        return None
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            hashed_password = DatabaseManager.hash_password(password)
+            
+            cursor.execute('SELECT id, username, role FROM users WHERE username = ? AND password = ?',
+                          (username, hashed_password))
+            user = cursor.fetchone()
+            
+            if user:
+                return dict(user)
+            return None
 
     @staticmethod
     def register_user(username, password, role):
-        conn = DatabaseManager.get_connection()
-        cursor = conn.cursor()
-        hashed_password = DatabaseManager.hash_password(password)
-        
-        try:
-            cursor.execute('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
-                         (username, hashed_password, role))
-            conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            return False
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            hashed_password = DatabaseManager.hash_password(password)
+            
+            try:
+                cursor.execute('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
+                             (username, hashed_password, role))
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
 
 # ==================== 帖子管理器 ====================
 class PostManager:
     @staticmethod
     def get_posts(limit=50):
-        conn = DatabaseManager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''SELECT posts.id, posts.user_id, posts.tag, posts.content, 
-                         posts.created_at, users.role FROM posts 
-                         JOIN users ON posts.user_id = users.id 
-                         ORDER BY posts.created_at DESC LIMIT ?''', (limit,))
-        return cursor.fetchall()
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''SELECT posts.id, posts.user_id, posts.tag, posts.content, 
+                             posts.created_at, users.role FROM posts 
+                             JOIN users ON posts.user_id = users.id 
+                             ORDER BY posts.created_at DESC LIMIT ?''', (limit,))
+            return cursor.fetchall()
 
     @staticmethod
     def add_post(user_id, tag, content):
-        conn = DatabaseManager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO posts (user_id, tag, content) VALUES (?, ?, ?)',
-                      (user_id, tag, content))
-        conn.commit()
-        return cursor.lastrowid
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO posts (user_id, tag, content) VALUES (?, ?, ?)',
+                          (user_id, tag, content))
+            conn.commit()
+            return cursor.lastrowid
 
     @staticmethod
     def get_post_replies(post_id):
-        conn = DatabaseManager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''SELECT replies.content, users.role FROM replies 
-                         JOIN users ON replies.user_id = users.id 
-                         WHERE replies.post_id = ? ORDER BY replies.created_at''', (post_id,))
-        return cursor.fetchall()
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''SELECT replies.content, users.role FROM replies 
+                             JOIN users ON replies.user_id = users.id 
+                             WHERE replies.post_id = ? ORDER BY replies.created_at''', (post_id,))
+            return cursor.fetchall()
 
     @staticmethod
     def add_reply(post_id, user_id, content):
-        conn = DatabaseManager.get_connection()
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO replies (post_id, user_id, content) VALUES (?, ?, ?)',
-                      (post_id, user_id, content))
-        conn.commit()
+        with DatabaseManager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO replies (post_id, user_id, content) VALUES (?, ?, ?)',
+                          (post_id, user_id, content))
+            conn.commit()
 
 # ==================== UI助手 ====================
 class UIHelper:
@@ -292,7 +292,7 @@ def show_main_app():
                 with st.container():
                     time_display = UIHelper.get_time_display(post['created_at'])
                     st.markdown(f"**【{post['tag']}】** <span style='color:gray; font-size:12px;'>发布于 {time_display}</span>", 
-                              unsafe_allow_html=True)
+                               unsafe_allow_html=True)
                     st.info(post['content'])
                     
                     replies = PostManager.get_post_replies(post['id'])
@@ -320,7 +320,7 @@ def show_main_app():
                 with st.container():
                     time_display = UIHelper.get_time_display(post['created_at'])
                     st.markdown(f"**【{post['tag']}】** <span style='color:gray; font-size:12px;'>发布于 {time_display}</span>", 
-                              unsafe_allow_html=True)
+                               unsafe_allow_html=True)
                     st.info(post['content'])
                     
                     # 提交回复
